@@ -1,0 +1,165 @@
+attacker[active]
+
+// Not sure the signature verification primitive is working correctly. Attacker is mutating the signature causing equivalence to fail even when signature should be authenticated with sign-verif
+
+// Exchange two public keys and a nonce over a trusted channel
+principal Alice[
+    generates root_secret_Alice
+    root_public_Alice = g^root_secret_Alice
+    generates ephemeral_secret_Alice_1
+    ephemeral_public_Alice_1 = g^ephemeral_secret_Alice_1
+    generates nonce_Alice // nonce is so Alice and Bob post to "different" addresses
+]
+
+principal Bob[
+    generates root_secret_Bob
+    root_public_Bob = g^root_secret_Bob
+    generates ephemeral_secret_Bob_1
+    ephemeral_public_Bob_1 = g^ephemeral_secret_Bob_1
+    generates nonce_Bob // nonce is so Alice and Bob post to "different" addresses
+]
+
+// Note: assumed to happen offline, although it's sufficient to ONLY exchange root securely IF you authenticate ephemeral keys against them
+Alice -> Bob: [root_public_Alice], [ephemeral_public_Alice_1], [nonce_Alice]
+Bob -> Alice: [root_public_Bob], [ephemeral_public_Bob_1], [nonce_Bob]
+
+// Set up shared secret and double ratchet (chain keys are shared secrets)
+principal Alice[
+    // Derive shared secrets
+    chain_key_Alice_1 = root_public_Bob^root_secret_Alice
+    ephemeral_shared_Alice_1 = ephemeral_public_Bob_1^ephemeral_secret_Alice_1
+    // Use HKDF to generate addresses
+    address_Alice_1, chain_key_Alice_2 = HKDF(ephemeral_shared_Alice_1, chain_key_Alice_1, nonce_Alice)
+    expected_address_Bob_1, expected_chain_key_Bob_2 = HKDF(ephemeral_shared_Alice_1, chain_key_Alice_1, nonce_Bob)
+]
+
+principal Bob[
+    // Derive shared secrets
+    chain_key_Bob_1 = root_public_Alice^root_secret_Bob
+    ephemeral_shared_Bob_1 = ephemeral_public_Alice_1^ephemeral_secret_Bob_1
+    // Use HKDF to generate addresses
+    address_Bob_1, chain_key_Bob_2 = HKDF(ephemeral_shared_Bob_1, chain_key_Bob_1, nonce_Bob)
+    expected_address_Alice_1, expected_chain_key_Alice_2 = HKDF(ephemeral_shared_Bob_1, chain_key_Bob_1, nonce_Alice)
+]
+
+// Time passes
+phase[1] 
+
+// Alice wishes to send a message to Bob
+principal Alice[
+    // Message is unencrypted, for sake of simplicity here
+    generates messageA1
+]
+
+// Alice sends her message (burning her address in the process)
+principal Alice[leaks address_Alice_1]
+Alice -> Bob: messageA1
+
+phase[2]
+
+// Bob replies to Alice AND because he has received a message, he generates and sends a new public key
+// Bob does NOT generate his next address yet: consider, what if Alice responds before he does and updates his DH ratchet?
+// Once we've mixed the nonces into the key chains we do NOT need to keep re-using them. This DOES mean we need to track two separate key chains (really, address chains).
+principal Bob[
+    generates messageB1
+    // Generate fresh ephemeral key pair
+    generates ephemeral_secret_Bob_2
+    ephemeral_public_Bob_2 = g^ephemeral_secret_Bob_2
+    // Bob rolls forward the DH ratchet with a new DH key (Alice's old PubKey and his new PriKey)
+    ephemeral_shared_Bob_2 = ephemeral_public_Alice_1^ephemeral_secret_Bob_2
+    // Bob needs to calculate Alice's next expected address
+    expected_address_Alice_2, expected_chain_key_Alice_3 = HKDF(ephemeral_shared_Bob_2, expected_chain_key_Alice_2, nil)
+]
+
+// Message sent with new public key (message and new PK would really be using AEAD)
+principal Bob[leaks address_Bob_1]
+Bob -> Alice: messageB1, [ephemeral_public_Bob_2]
+
+// Alice receives the message and updates her ratchets
+principal Alice[
+    ephemeral_shared_Alice_2 = ephemeral_public_Bob_2^ephemeral_secret_Alice_1
+    address_Alice_2, chain_key_Alice_3 = HKDF(ephemeral_shared_Alice_2, chain_key_Alice_2, nil)
+    // Alice updates her expected next address for Bob
+    expected_address_Bob_2, expected_chain_key_Bob_3 = HKDF(ephemeral_shared_Alice_2, expected_chain_key_Bob_2, nil)
+]
+
+phase[3]
+
+// Bob sends a second message ratcheting only the KDF -> now he makes address 2
+principal Bob[
+    generates messageB2
+    // No new DH keys
+    // Only KDF ratchet
+    address_Bob_2, chain_key_Bob_3 = HKDF(ephemeral_shared_Bob_2, chain_key_Bob_2, nil)
+]
+
+principal Bob[leaks address_Bob_2]
+Bob -> Alice: messageB2
+
+// Alice receives message and updates expected address (used if he sends another message - if she replies before this then she'll need to update her expectations)
+principal Alice[
+    expected_address_Bob_3, expected_chain_key_Bob_4 = HKDF(ephemeral_shared_Alice_2, expected_chain_key_Bob_3, nil)
+]
+
+phase[4]
+
+// Alice responds to Bob, generating a new DH keypair
+principal Alice[
+    generates messageA2
+    generates ephemeral_secret_Alice_2
+    ephemeral_public_Alice_2 = g^ephemeral_secret_Alice_2
+    ephemeral_shared_Alice_3 = ephemeral_public_Bob_2^ephemeral_secret_Alice_2 // new shared secret using Bob's last known PubKey
+    // Alice throws away her old expected address for Bob and makes a new one
+    expected_address_Bob_3_alt, expected_chain_key_Bob_4_alt = HKDF(ephemeral_shared_Alice_3, expected_chain_key_Bob_3, nil)
+]
+
+principal Alice[leaks address_Alice_2]
+Alice -> Bob: messageA2, [ephemeral_public_Alice_2] // epA2 would be behind AEAD
+
+// Bob updates his expected address for Alice
+principal Bob[
+    ephemeral_shared_Bob_3 = ephemeral_public_Alice_2^ephemeral_secret_Bob_2
+    address_Bob_3, chain_key_Bob_4 = HKDF(ephemeral_shared_Bob_3, chain_key_Bob_3, nil)
+]
+
+phase[5]
+
+// Bob loses his phone and (for some reason) his root key was compromised. Are his addresses safe?
+// principal Bob[leaks root_secret_Bob]
+
+// Queries
+queries[
+    // Protocol correctness queries
+    // Initial key agreement
+    confidentiality? chain_key_Alice_1
+    confidentiality? chain_key_Bob_1
+    confidentiality? ephemeral_shared_Alice_1
+    confidentiality? ephemeral_shared_Bob_1
+    authentication? Alice -> Bob: nonce_Alice
+    authentication? Bob -> Alice: nonce_Bob
+    // Shared secrets agree (after key exchange, before message sent)
+    equivalence? ephemeral_shared_Alice_1, ephemeral_shared_Bob_1
+    equivalence? chain_key_Alice_1, chain_key_Bob_1
+    equivalence? chain_key_Alice_2, expected_chain_key_Alice_2
+    equivalence? chain_key_Bob_2, expected_chain_key_Bob_2
+    // Alice should be able to expect Bob's next address and visa-versa
+    equivalence? address_Alice_1, expected_address_Alice_1
+    equivalence? address_Bob_1, expected_address_Bob_1
+    // Shared secrets should agree in the next round
+    equivalence? ephemeral_shared_Bob_2, ephemeral_shared_Alice_2
+    // Alice and Bob's expected addresses need to agree going forward
+    equivalence? address_Alice_2, expected_address_Alice_2
+    equivalence? address_Bob_2, expected_address_Bob_2
+    equivalence? address_Bob_3, expected_address_Bob_3_alt // alt because Alice triggered Bob to update shared secret
+
+    // Protocol security queries
+    // Can successive addresses be linked to participants?
+    unlinkability? address_Alice_1, address_Alice_2
+    unlinkability? address_Bob_1, address_Bob_2, address_Bob_3
+    // An unused address remains confidential
+    confidentiality? address_Bob_3
+    confidentiality? expected_address_Bob_3_alt
+
+    // Bob's address is ONLY leaked by burning, not by a protocol vulnerability (if you comment out the leaks command, despite a leak in root key address 1 is confidential)
+    // confidentiality? address_Bob_1
+]

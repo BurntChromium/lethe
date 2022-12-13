@@ -1,0 +1,21 @@
+[package]
+name = "lethe"
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+
+[lib]
+name = "lethe"
+path = "src/lib.rs"
+doctest = false # we don't have doc tests, so this avoids confusing the compiler
+
+[dependencies]
+anyhow = "1.0.57"
+hex = "0.4.3"
+# x25519-dalek is incompatible with latest rand_core
+rand_core = { version = "0.5", default-features = false } 
+sha2 = "0.10.2"
+# We need reuseable secrets for the Double Ratchet algorithm
+x25519-dalek = {version = "1.2.0", features = ["reusable_secrets"]}
+# Including std allows easier error handling
+hkdf = { version = "0.12.3", features = ["std"] }
